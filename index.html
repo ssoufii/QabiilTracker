@@ -97,8 +97,8 @@
     position: relative;
     overflow: auto;
     display: flex;
-    align-items: center;
-    justify-content: center;
+    align-items: safe center;
+    justify-content: safe center;
   }
 
   .canvas .placeholder {
@@ -239,6 +239,19 @@
     border-color: var(--color-accent);
     color: var(--color-accent);
   }
+
+  .tree-controls {
+    margin-bottom: var(--space-4);
+    padding-bottom: var(--space-4);
+    border-bottom: 1px solid var(--color-border);
+  }
+
+  .field input[type="range"] {
+    padding: 0;
+    border: none;
+    background: transparent;
+    accent-color: var(--color-accent);
+  }
 </style>
 </head>
 <body>
@@ -247,6 +260,13 @@
   </header>
   <div class="app-body">
     <aside id="sidebar" class="sidebar">
+      <div class="tree-controls">
+        <h2>Tree view</h2>
+        <div class="field">
+          <label for="generations-slider">Generations back: <span id="generations-value"></span></label>
+          <input type="range" id="generations-slider" min="1" max="10" step="1">
+        </div>
+      </div>
       <h2 id="form-heading">Myself</h2>
       <form id="self-form" class="person-form" novalidate>
         <div class="field">
@@ -285,18 +305,30 @@
   <script>
     (function () {
       var STORAGE_KEY = 'qabiiltracker.people';
+      var MIN_GENERATIONS_BACK = 1;
+      var MAX_GENERATIONS_BACK = 10;
+      var DEFAULT_GENERATIONS_BACK = 4;
+
+      function clampGenerationsBack(value) {
+        value = parseInt(value, 10);
+        if (isNaN(value)) return DEFAULT_GENERATIONS_BACK;
+        return Math.min(MAX_GENERATIONS_BACK, Math.max(MIN_GENERATIONS_BACK, value));
+      }
 
       function loadState() {
         try {
           var raw = localStorage.getItem(STORAGE_KEY);
-          if (!raw) return { people: {}, selfId: null };
+          if (!raw) return { people: {}, selfId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
           var parsed = JSON.parse(raw);
           return {
             people: parsed.people || {},
             selfId: parsed.selfId || null,
+            generationsBack: clampGenerationsBack(
+              parsed.generationsBack != null ? parsed.generationsBack : DEFAULT_GENERATIONS_BACK
+            ),
           };
         } catch (err) {
-          return { people: {}, selfId: null };
+          return { people: {}, selfId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
         }
       }
 
@@ -317,6 +349,8 @@
       var givenNameError = document.getElementById('self-given-name-error');
       var placeholder = document.getElementById('canvas-placeholder');
       var treeRoot = document.getElementById('tree-root');
+      var generationsSlider = document.getElementById('generations-slider');
+      var generationsValue = document.getElementById('generations-value');
 
       // Tracks which record the sidebar form is currently creating/editing.
       // role: 'self' | 'father' | 'mother'; childId: id of the person this
@@ -404,15 +438,33 @@
         svg.appendChild(path);
       }
 
-      function drawConnectors(svg, self, slotEls) {
-        var rootRect = treeRoot.getBoundingClientRect();
-        var selfTop = elementCenter(slotEls.self, 'top', rootRect);
-        PARENT_ROLES.forEach(function (role) {
-          var parentId = self[role + 'Id'];
-          if (!parentId) return;
-          var from = elementCenter(slotEls[role], 'bottom', rootRect);
-          drawConnector(svg, from, selfTop);
-        });
+      // Builds a list of tiers, tiers[0] being self and each subsequent tier
+      // the father/mother slots of the previous tier's filled entries.
+      // Recursion stops on an empty slot: an unfilled ancestor gets no
+      // slots drawn above it, since there is no linked person to attach to.
+      function buildTiers(self, generationsBack) {
+        var tiers = [[{ key: 'self', person: self, role: 'self', childKey: null, childId: null }]];
+        var currentTier = tiers[0];
+        for (var depth = 0; depth < generationsBack; depth++) {
+          var nextTier = [];
+          currentTier.forEach(function (entry) {
+            if (!entry.person) return;
+            PARENT_ROLES.forEach(function (role) {
+              var parentId = entry.person[role + 'Id'];
+              nextTier.push({
+                key: entry.key + '.' + role,
+                person: parentId ? state.people[parentId] : null,
+                role: role,
+                childKey: entry.key,
+                childId: entry.person.id,
+              });
+            });
+          });
+          if (!nextTier.length) break;
+          tiers.push(nextTier);
+          currentTier = nextTier;
+        }
+        return tiers;
       }
 
       function renderCanvas() {
@@ -426,35 +478,43 @@
         placeholder.hidden = true;
         treeRoot.hidden = false;
 
-        var parentsTier = document.createElement('div');
-        parentsTier.className = 'tree-tier tree-tier-parents';
-        var slotEls = {};
-        PARENT_ROLES.forEach(function (role) {
-          var parentId = self[role + 'Id'];
-          var parent = parentId ? state.people[parentId] : null;
-          var slotEl = renderSlot(role, parent, self.id);
-          slotEls[role] = slotEl;
-          parentsTier.appendChild(slotEl);
-        });
-
-        var selfTier = document.createElement('div');
-        selfTier.className = 'tree-tier tree-tier-self';
-        var selfCard = renderPersonCard(self);
-        selfCard.classList.add('person-card--clickable');
-        selfCard.addEventListener('click', function () {
-          selectEditing('self', self.id, null);
-        });
-        selfTier.appendChild(selfCard);
-        slotEls.self = selfCard;
+        var tiers = buildTiers(self, state.generationsBack);
 
         var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.setAttribute('class', 'tree-connectors');
-
-        treeRoot.appendChild(parentsTier);
         treeRoot.appendChild(svg);
-        treeRoot.appendChild(selfTier);
 
-        drawConnectors(svg, self, slotEls);
+        var elementsByKey = {};
+        for (var i = tiers.length - 1; i >= 0; i--) {
+          var tierEl = document.createElement('div');
+          tierEl.className = 'tree-tier';
+          tiers[i].forEach(function (entry) {
+            var el;
+            if (entry.role === 'self') {
+              el = renderPersonCard(entry.person);
+              el.classList.add('person-card--clickable');
+              el.addEventListener('click', function () {
+                selectEditing('self', entry.person.id, null);
+              });
+            } else {
+              el = renderSlot(entry.role, entry.person, entry.childId);
+            }
+            el.dataset.entryKey = entry.key;
+            elementsByKey[entry.key] = el;
+            tierEl.appendChild(el);
+          });
+          treeRoot.appendChild(tierEl);
+        }
+
+        var rootRect = treeRoot.getBoundingClientRect();
+        tiers.forEach(function (tier) {
+          tier.forEach(function (entry) {
+            if (!entry.childKey) return;
+            var from = elementCenter(elementsByKey[entry.key], 'bottom', rootRect);
+            var to = elementCenter(elementsByKey[entry.childKey], 'top', rootRect);
+            drawConnector(svg, from, to);
+          });
+        });
       }
 
       function populateForm(person) {
@@ -519,6 +579,20 @@
       });
 
       window.addEventListener('resize', renderCanvas);
+
+      function updateGenerationsDisplay() {
+        generationsValue.textContent = state.generationsBack;
+      }
+
+      generationsSlider.addEventListener('input', function () {
+        state.generationsBack = clampGenerationsBack(generationsSlider.value);
+        updateGenerationsDisplay();
+        saveState(state);
+        renderCanvas();
+      });
+
+      generationsSlider.value = state.generationsBack;
+      updateGenerationsDisplay();
 
       var initialSelf = state.selfId ? state.people[state.selfId] : null;
       populateForm(initialSelf);

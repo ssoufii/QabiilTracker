@@ -161,8 +161,35 @@
 
   .tree-root {
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
+    gap: var(--space-5);
+    position: relative;
+  }
+
+  .tree-tier {
+    display: flex;
+    align-items: stretch;
+    justify-content: center;
+    gap: var(--space-4);
+    position: relative;
+    z-index: 1;
+  }
+
+  .tree-connectors {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+    z-index: 0;
+  }
+
+  .tree-connectors path {
+    fill: none;
+    stroke: var(--color-text-muted);
+    stroke-width: 1.5;
   }
 
   .person-card {
@@ -183,6 +210,35 @@
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
   }
+
+  .person-card--clickable {
+    cursor: pointer;
+  }
+
+  .person-card--clickable:hover {
+    border-color: var(--color-accent);
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
+  }
+
+  .person-slot-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 12rem;
+    border: 1px dashed var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+    text-align: center;
+    cursor: pointer;
+    background: transparent;
+  }
+
+  .person-slot-empty:hover {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
 </style>
 </head>
 <body>
@@ -191,7 +247,7 @@
   </header>
   <div class="app-body">
     <aside id="sidebar" class="sidebar">
-      <h2>Myself</h2>
+      <h2 id="form-heading">Myself</h2>
       <form id="self-form" class="person-form" novalidate>
         <div class="field">
           <label for="self-given-name">Given name</label>
@@ -249,8 +305,10 @@
       }
 
       var state = loadState();
+      var PARENT_ROLES = ['father', 'mother'];
 
       var form = document.getElementById('self-form');
+      var formHeading = document.getElementById('form-heading');
       var givenNameInput = document.getElementById('self-given-name');
       var familyNameInput = document.getElementById('self-family-name');
       var sexInput = document.getElementById('self-sex');
@@ -259,6 +317,11 @@
       var givenNameError = document.getElementById('self-given-name-error');
       var placeholder = document.getElementById('canvas-placeholder');
       var treeRoot = document.getElementById('tree-root');
+
+      // Tracks which record the sidebar form is currently creating/editing.
+      // role: 'self' | 'father' | 'mother'; childId: id of the person this
+      // role is a parent of (only meaningful for father/mother roles).
+      var editing = { role: 'self', personId: state.selfId, childId: null };
 
       function formatDate(isoDate) {
         var parts = isoDate.split('-').map(Number);
@@ -273,6 +336,10 @@
         if (person.birthDate) parts.push(formatDate(person.birthDate));
         if (person.birthPlace) parts.push(person.birthPlace);
         return parts.join(' · ');
+      }
+
+      function capitalize(word) {
+        return word.charAt(0).toUpperCase() + word.slice(1);
       }
 
       function renderPersonCard(person) {
@@ -296,6 +363,58 @@
         return card;
       }
 
+      function selectEditing(role, personId, childId) {
+        editing = { role: role, personId: personId || null, childId: childId || null };
+        formHeading.textContent = role === 'self' ? 'Myself' : capitalize(role);
+        populateForm(personId ? state.people[personId] : null);
+      }
+
+      function renderSlot(role, person, childId) {
+        var el;
+        if (person) {
+          el = renderPersonCard(person);
+          el.classList.add('person-card--clickable');
+        } else {
+          el = document.createElement('div');
+          el.className = 'person-slot-empty';
+          el.textContent = '+ Add ' + capitalize(role);
+        }
+        el.addEventListener('click', function () {
+          selectEditing(role, person ? person.id : null, childId);
+        });
+        return el;
+      }
+
+      function elementCenter(el, edge, rootRect) {
+        var rect = el.getBoundingClientRect();
+        return {
+          x: rect.left + rect.width / 2 - rootRect.left,
+          y: (edge === 'top' ? rect.top : rect.bottom) - rootRect.top,
+        };
+      }
+
+      function drawConnector(svg, from, to) {
+        var midY = from.y + (to.y - from.y) / 2;
+        var path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        var d = 'M ' + from.x + ' ' + from.y +
+          ' V ' + midY +
+          ' H ' + to.x +
+          ' V ' + to.y;
+        path.setAttribute('d', d);
+        svg.appendChild(path);
+      }
+
+      function drawConnectors(svg, self, slotEls) {
+        var rootRect = treeRoot.getBoundingClientRect();
+        var selfTop = elementCenter(slotEls.self, 'top', rootRect);
+        PARENT_ROLES.forEach(function (role) {
+          var parentId = self[role + 'Id'];
+          if (!parentId) return;
+          var from = elementCenter(slotEls[role], 'bottom', rootRect);
+          drawConnector(svg, from, selfTop);
+        });
+      }
+
       function renderCanvas() {
         treeRoot.innerHTML = '';
         var self = state.selfId ? state.people[state.selfId] : null;
@@ -306,7 +425,36 @@
         }
         placeholder.hidden = true;
         treeRoot.hidden = false;
-        treeRoot.appendChild(renderPersonCard(self));
+
+        var parentsTier = document.createElement('div');
+        parentsTier.className = 'tree-tier tree-tier-parents';
+        var slotEls = {};
+        PARENT_ROLES.forEach(function (role) {
+          var parentId = self[role + 'Id'];
+          var parent = parentId ? state.people[parentId] : null;
+          var slotEl = renderSlot(role, parent, self.id);
+          slotEls[role] = slotEl;
+          parentsTier.appendChild(slotEl);
+        });
+
+        var selfTier = document.createElement('div');
+        selfTier.className = 'tree-tier tree-tier-self';
+        var selfCard = renderPersonCard(self);
+        selfCard.classList.add('person-card--clickable');
+        selfCard.addEventListener('click', function () {
+          selectEditing('self', self.id, null);
+        });
+        selfTier.appendChild(selfCard);
+        slotEls.self = selfCard;
+
+        var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+        svg.setAttribute('class', 'tree-connectors');
+
+        treeRoot.appendChild(parentsTier);
+        treeRoot.appendChild(svg);
+        treeRoot.appendChild(selfTier);
+
+        drawConnectors(svg, self, slotEls);
       }
 
       function populateForm(person) {
@@ -315,6 +463,8 @@
         sexInput.value = person ? person.sex || '' : '';
         birthDateInput.value = person ? person.birthDate || '' : '';
         birthPlaceInput.value = person ? person.birthPlace || '' : '';
+        givenNameError.hidden = true;
+        givenNameInput.removeAttribute('aria-invalid');
       }
 
       function generateId() {
@@ -334,7 +484,8 @@
         givenNameError.hidden = true;
         givenNameInput.removeAttribute('aria-invalid');
 
-        var id = state.selfId || generateId();
+        var id = editing.personId || generateId();
+        var existing = state.people[id] || {};
         var person = {
           id: id,
           givenName: givenName,
@@ -342,10 +493,19 @@
           sex: sexInput.value,
           birthDate: birthDateInput.value,
           birthPlace: birthPlaceInput.value.trim(),
+          fatherId: existing.fatherId || null,
+          motherId: existing.motherId || null,
         };
 
         state.people[id] = person;
-        state.selfId = id;
+
+        if (editing.role === 'self') {
+          state.selfId = id;
+        } else if (editing.childId) {
+          state.people[editing.childId][editing.role + 'Id'] = id;
+        }
+
+        editing.personId = id;
         saveState(state);
         populateForm(person);
         renderCanvas();
@@ -357,6 +517,8 @@
           givenNameInput.removeAttribute('aria-invalid');
         }
       });
+
+      window.addEventListener('resize', renderCanvas);
 
       var initialSelf = state.selfId ? state.people[state.selfId] : null;
       populateForm(initialSelf);

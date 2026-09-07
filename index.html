@@ -14,6 +14,7 @@
     --color-text-muted: #6b6459;
     --color-accent: #7a5c3e;
     --color-accent-contrast: #ffffff;
+    --color-danger: #b3261e;
 
     /* Typography tokens */
     --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
@@ -104,6 +105,84 @@
     color: var(--color-text-muted);
     font-size: var(--font-size-sm);
   }
+
+  .person-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .field label {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .field input,
+  .field select {
+    font: inherit;
+    color: var(--color-text);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+  }
+
+  .field input[aria-invalid="true"] {
+    border-color: var(--color-danger);
+  }
+
+  .field-error {
+    margin: 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-danger);
+  }
+
+  .btn-primary {
+    font: inherit;
+    font-weight: 600;
+    color: var(--color-accent-contrast);
+    background: var(--color-accent);
+    border: none;
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .btn-primary:hover {
+    opacity: 0.9;
+  }
+
+  .tree-root {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .person-card {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-3);
+    min-width: 12rem;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.06);
+  }
+
+  .person-card .person-name {
+    font-weight: 600;
+    margin-bottom: var(--space-1);
+  }
+
+  .person-card .person-detail {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
 </style>
 </head>
 <body>
@@ -112,12 +191,177 @@
   </header>
   <div class="app-body">
     <aside id="sidebar" class="sidebar">
-      <h2>Records</h2>
-      <p class="placeholder">Person forms, search, and the ledger will live here.</p>
+      <h2>Myself</h2>
+      <form id="self-form" class="person-form" novalidate>
+        <div class="field">
+          <label for="self-given-name">Given name</label>
+          <input type="text" id="self-given-name" name="givenName" required>
+          <p class="field-error" id="self-given-name-error" hidden>Given name is required.</p>
+        </div>
+        <div class="field">
+          <label for="self-family-name">Family name</label>
+          <input type="text" id="self-family-name" name="familyName">
+        </div>
+        <div class="field">
+          <label for="self-sex">Sex</label>
+          <select id="self-sex" name="sex">
+            <option value="">Unspecified</option>
+            <option value="female">Female</option>
+            <option value="male">Male</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="self-birth-date">Birth date</label>
+          <input type="date" id="self-birth-date" name="birthDate">
+        </div>
+        <div class="field">
+          <label for="self-birth-place">Birth place</label>
+          <input type="text" id="self-birth-place" name="birthPlace">
+        </div>
+        <button type="submit" class="btn-primary">Save</button>
+      </form>
     </aside>
     <main id="canvas" class="canvas">
-      <p class="placeholder">Your pedigree tree will render here.</p>
+      <p class="placeholder" id="canvas-placeholder">Your pedigree tree will render here.</p>
+      <div id="tree-root" class="tree-root" hidden></div>
     </main>
   </div>
+  <script>
+    (function () {
+      var STORAGE_KEY = 'qabiiltracker.people';
+
+      function loadState() {
+        try {
+          var raw = localStorage.getItem(STORAGE_KEY);
+          if (!raw) return { people: {}, selfId: null };
+          var parsed = JSON.parse(raw);
+          return {
+            people: parsed.people || {},
+            selfId: parsed.selfId || null,
+          };
+        } catch (err) {
+          return { people: {}, selfId: null };
+        }
+      }
+
+      function saveState(state) {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+
+      var state = loadState();
+
+      var form = document.getElementById('self-form');
+      var givenNameInput = document.getElementById('self-given-name');
+      var familyNameInput = document.getElementById('self-family-name');
+      var sexInput = document.getElementById('self-sex');
+      var birthDateInput = document.getElementById('self-birth-date');
+      var birthPlaceInput = document.getElementById('self-birth-place');
+      var givenNameError = document.getElementById('self-given-name-error');
+      var placeholder = document.getElementById('canvas-placeholder');
+      var treeRoot = document.getElementById('tree-root');
+
+      function formatDate(isoDate) {
+        var parts = isoDate.split('-').map(Number);
+        var year = parts[0], month = parts[1], day = parts[2];
+        if (!year || !month || !day) return isoDate;
+        var d = new Date(Date.UTC(year, month - 1, day));
+        return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+      }
+
+      function formatBirthDetails(person) {
+        var parts = [];
+        if (person.birthDate) parts.push(formatDate(person.birthDate));
+        if (person.birthPlace) parts.push(person.birthPlace);
+        return parts.join(' · ');
+      }
+
+      function renderPersonCard(person) {
+        var card = document.createElement('div');
+        card.className = 'person-card';
+        card.dataset.personId = person.id;
+
+        var name = document.createElement('div');
+        name.className = 'person-name';
+        name.textContent = [person.givenName, person.familyName].filter(Boolean).join(' ') || 'Unnamed';
+        card.appendChild(name);
+
+        var details = formatBirthDetails(person);
+        if (details) {
+          var detail = document.createElement('div');
+          detail.className = 'person-detail';
+          detail.textContent = details;
+          card.appendChild(detail);
+        }
+
+        return card;
+      }
+
+      function renderCanvas() {
+        treeRoot.innerHTML = '';
+        var self = state.selfId ? state.people[state.selfId] : null;
+        if (!self) {
+          placeholder.hidden = false;
+          treeRoot.hidden = true;
+          return;
+        }
+        placeholder.hidden = true;
+        treeRoot.hidden = false;
+        treeRoot.appendChild(renderPersonCard(self));
+      }
+
+      function populateForm(person) {
+        givenNameInput.value = person ? person.givenName || '' : '';
+        familyNameInput.value = person ? person.familyName || '' : '';
+        sexInput.value = person ? person.sex || '' : '';
+        birthDateInput.value = person ? person.birthDate || '' : '';
+        birthPlaceInput.value = person ? person.birthPlace || '' : '';
+      }
+
+      function generateId() {
+        return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+      }
+
+      form.addEventListener('submit', function (event) {
+        event.preventDefault();
+        var givenName = givenNameInput.value.trim();
+
+        if (!givenName) {
+          givenNameError.hidden = false;
+          givenNameInput.setAttribute('aria-invalid', 'true');
+          givenNameInput.focus();
+          return;
+        }
+        givenNameError.hidden = true;
+        givenNameInput.removeAttribute('aria-invalid');
+
+        var id = state.selfId || generateId();
+        var person = {
+          id: id,
+          givenName: givenName,
+          familyName: familyNameInput.value.trim(),
+          sex: sexInput.value,
+          birthDate: birthDateInput.value,
+          birthPlace: birthPlaceInput.value.trim(),
+        };
+
+        state.people[id] = person;
+        state.selfId = id;
+        saveState(state);
+        populateForm(person);
+        renderCanvas();
+      });
+
+      givenNameInput.addEventListener('input', function () {
+        if (givenNameInput.value.trim()) {
+          givenNameError.hidden = true;
+          givenNameInput.removeAttribute('aria-invalid');
+        }
+      });
+
+      var initialSelf = state.selfId ? state.people[state.selfId] : null;
+      populateForm(initialSelf);
+      renderCanvas();
+    })();
+  </script>
 </body>
 </html>

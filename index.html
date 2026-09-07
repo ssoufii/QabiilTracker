@@ -95,10 +95,16 @@
   .canvas {
     flex: 1;
     position: relative;
-    overflow: auto;
+    overflow: hidden;
     display: flex;
     align-items: safe center;
     justify-content: safe center;
+    touch-action: none;
+    cursor: grab;
+  }
+
+  .canvas.panning {
+    cursor: grabbing;
   }
 
   .canvas .placeholder {
@@ -159,6 +165,22 @@
     opacity: 0.9;
   }
 
+  .btn-secondary {
+    font: inherit;
+    font-weight: 600;
+    color: var(--color-accent);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    margin-top: var(--space-2);
+  }
+
+  .btn-secondary:hover {
+    border-color: var(--color-accent);
+  }
+
   .tree-root {
     display: flex;
     flex-direction: column;
@@ -166,6 +188,7 @@
     justify-content: center;
     gap: var(--space-5);
     position: relative;
+    transform-origin: center center;
   }
 
   .tree-tier {
@@ -310,6 +333,7 @@
           <label for="generations-slider">Generations back: <span id="generations-value"></span></label>
           <input type="range" id="generations-slider" min="1" max="10" step="1">
         </div>
+        <button type="button" id="fit-to-screen-btn" class="btn-secondary">Fit to screen</button>
       </div>
       <h2 id="form-heading">Myself</h2>
       <form id="self-form" class="person-form" novalidate>
@@ -400,6 +424,148 @@
       var treeRoot = document.getElementById('tree-root');
       var generationsSlider = document.getElementById('generations-slider');
       var generationsValue = document.getElementById('generations-value');
+      var canvas = document.getElementById('canvas');
+      var fitToScreenBtn = document.getElementById('fit-to-screen-btn');
+
+      // Pan/zoom view of the canvas, applied as a CSS transform on
+      // #tree-root and kept independent of the layout logic in buildTiers.
+      var MIN_SCALE = 0.2;
+      var MAX_SCALE = 4;
+      var view = { scale: 1, panX: 0, panY: 0 };
+
+      function applyTransform() {
+        treeRoot.style.transform = 'translate(' + view.panX + 'px, ' + view.panY + 'px) scale(' + view.scale + ')';
+      }
+
+      // Rescales around the point (cx, cy), given in canvas-viewport
+      // coordinates, so that the content under it stays put.
+      function zoomAt(cx, cy, canvasRect, newScale) {
+        newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, newScale));
+        var centerX = canvasRect.width / 2;
+        var centerY = canvasRect.height / 2;
+        var ratio = newScale / view.scale;
+        view.panX = (cx - centerX) - ratio * (cx - view.panX - centerX);
+        view.panY = (cy - centerY) - ratio * (cy - view.panY - centerY);
+        view.scale = newScale;
+        applyTransform();
+      }
+
+      function fitToScreen() {
+        if (treeRoot.hidden) return;
+        var rect = canvas.getBoundingClientRect();
+        var naturalWidth = treeRoot.offsetWidth;
+        var naturalHeight = treeRoot.offsetHeight;
+        if (!naturalWidth || !naturalHeight) return;
+        var newScale = Math.min(rect.width / naturalWidth, rect.height / naturalHeight) * 0.92;
+        newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, Math.min(newScale, 1)));
+        view.scale = newScale;
+        view.panX = 0;
+        view.panY = 0;
+        applyTransform();
+      }
+
+      fitToScreenBtn.addEventListener('click', fitToScreen);
+
+      canvas.addEventListener('wheel', function (event) {
+        if (treeRoot.hidden) return;
+        event.preventDefault();
+        var rect = canvas.getBoundingClientRect();
+        var cx = event.clientX - rect.left;
+        var cy = event.clientY - rect.top;
+        var newScale = view.scale * Math.exp(-event.deltaY * 0.0015);
+        zoomAt(cx, cy, rect, newScale);
+      }, { passive: false });
+
+      function isInteractiveTarget(target) {
+        return !!(target.closest && target.closest('.person-card, .person-slot-empty, button, input, select, textarea, a, label'));
+      }
+
+      function distanceBetween(a, b) {
+        return Math.hypot(a.x - b.x, a.y - b.y);
+      }
+
+      function midpoint(a, b) {
+        return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      }
+
+      // pointerId -> last known {x, y}; drives both single-pointer pan and
+      // two-pointer pinch-zoom.
+      var pointers = {};
+      var panState = null;
+      var pinchState = null;
+
+      function startPan(pointerId, clientX, clientY) {
+        panState = {
+          pointerId: pointerId,
+          startX: clientX,
+          startY: clientY,
+          startPanX: view.panX,
+          startPanY: view.panY,
+        };
+        canvas.classList.add('panning');
+      }
+
+      canvas.addEventListener('pointerdown', function (event) {
+        if (treeRoot.hidden) return;
+        if (event.pointerType !== 'touch' && event.button !== 0) return;
+        if (isInteractiveTarget(event.target)) return;
+
+        try { canvas.setPointerCapture(event.pointerId); } catch (err) { /* pointer already gone */ }
+        pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
+
+        var ids = Object.keys(pointers);
+        if (ids.length === 2) {
+          panState = null;
+          canvas.classList.remove('panning');
+          var pts = ids.map(function (id) { return pointers[id]; });
+          pinchState = { lastDist: distanceBetween(pts[0], pts[1]) };
+        } else if (ids.length === 1) {
+          startPan(event.pointerId, event.clientX, event.clientY);
+        }
+      });
+
+      canvas.addEventListener('pointermove', function (event) {
+        if (!pointers[event.pointerId]) return;
+        pointers[event.pointerId] = { x: event.clientX, y: event.clientY };
+
+        var ids = Object.keys(pointers);
+        var rect = canvas.getBoundingClientRect();
+
+        if (ids.length === 2 && pinchState) {
+          var pts = ids.map(function (id) { return pointers[id]; });
+          var dist = distanceBetween(pts[0], pts[1]);
+          if (pinchState.lastDist > 0 && dist > 0) {
+            var mid = midpoint(pts[0], pts[1]);
+            var newScale = view.scale * (dist / pinchState.lastDist);
+            zoomAt(mid.x - rect.left, mid.y - rect.top, rect, newScale);
+          }
+          pinchState.lastDist = dist;
+        } else if (panState && event.pointerId === panState.pointerId) {
+          view.panX = panState.startPanX + (event.clientX - panState.startX);
+          view.panY = panState.startPanY + (event.clientY - panState.startY);
+          applyTransform();
+        }
+      });
+
+      function releasePointer(event) {
+        if (!pointers[event.pointerId]) return;
+        delete pointers[event.pointerId];
+        try { canvas.releasePointerCapture(event.pointerId); } catch (err) { /* already released */ }
+
+        var ids = Object.keys(pointers);
+        if (ids.length < 2) pinchState = null;
+        if (panState && event.pointerId === panState.pointerId) {
+          panState = null;
+          canvas.classList.remove('panning');
+        }
+        if (ids.length === 1) {
+          var remainingId = ids[0];
+          startPan(Number(remainingId), pointers[remainingId].x, pointers[remainingId].y);
+        }
+      }
+
+      canvas.addEventListener('pointerup', releasePointer);
+      canvas.addEventListener('pointercancel', releasePointer);
 
       // Tracks which record the sidebar form is currently creating/editing.
       // role: 'self' | 'father' | 'mother'; childId: id of the person this
@@ -497,11 +663,15 @@
         return el;
       }
 
-      function elementCenter(el, edge, rootRect) {
+      // rect coordinates are in viewport pixels, already scaled by the
+      // canvas pan/zoom transform on #tree-root; dividing by the current
+      // scale recovers the untransformed local coordinates that the SVG
+      // (itself inside the transformed subtree) draws in.
+      function elementCenter(el, edge, rootRect, scale) {
         var rect = el.getBoundingClientRect();
         return {
-          x: rect.left + rect.width / 2 - rootRect.left,
-          y: (edge === 'top' ? rect.top : rect.bottom) - rootRect.top,
+          x: (rect.left + rect.width / 2 - rootRect.left) / scale,
+          y: ((edge === 'top' ? rect.top : rect.bottom) - rootRect.top) / scale,
         };
       }
 
@@ -556,6 +726,7 @@
         }
         placeholder.hidden = true;
         treeRoot.hidden = false;
+        applyTransform();
 
         var tiers = buildTiers(self, state.generationsBack);
 
@@ -609,8 +780,8 @@
         tiers.forEach(function (tier) {
           tier.forEach(function (entry) {
             if (!entry.childKey) return;
-            var from = elementCenter(elementsByKey[entry.key], 'bottom', rootRect);
-            var to = elementCenter(elementsByKey[entry.childKey], 'top', rootRect);
+            var from = elementCenter(elementsByKey[entry.key], 'bottom', rootRect, view.scale);
+            var to = elementCenter(elementsByKey[entry.childKey], 'top', rootRect, view.scale);
             drawConnector(svg, from, to);
           });
         });

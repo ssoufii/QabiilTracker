@@ -211,6 +211,15 @@
     color: var(--color-text-muted);
   }
 
+  .person-card .person-kinship {
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    color: var(--color-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    margin-bottom: var(--space-1);
+  }
+
   .person-card--clickable {
     cursor: pointer;
   }
@@ -251,6 +260,41 @@
     border: none;
     background: transparent;
     accent-color: var(--color-accent);
+  }
+
+  .tree-tier-group {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .tree-tier-label {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    color: var(--color-text-muted);
+    font-size: var(--font-size-sm);
+  }
+
+  .tree-tier-label::before,
+  .tree-tier-label::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--color-border);
+  }
+
+  .tree-tier-label-text {
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    white-space: nowrap;
+  }
+
+  .tree-tier-count {
+    white-space: nowrap;
   }
 </style>
 </head>
@@ -293,6 +337,10 @@
         <div class="field">
           <label for="self-birth-place">Birth place</label>
           <input type="text" id="self-birth-place" name="birthPlace">
+        </div>
+        <div class="field">
+          <label for="self-label-override">Custom label (optional)</label>
+          <input type="text" id="self-label-override" name="labelOverride" placeholder="Overrides the computed relationship label">
         </div>
         <button type="submit" class="btn-primary">Save</button>
       </form>
@@ -346,6 +394,7 @@
       var sexInput = document.getElementById('self-sex');
       var birthDateInput = document.getElementById('self-birth-date');
       var birthPlaceInput = document.getElementById('self-birth-place');
+      var labelOverrideInput = document.getElementById('self-label-override');
       var givenNameError = document.getElementById('self-given-name-error');
       var placeholder = document.getElementById('canvas-placeholder');
       var treeRoot = document.getElementById('tree-root');
@@ -376,10 +425,38 @@
         return word.charAt(0).toUpperCase() + word.slice(1);
       }
 
-      function renderPersonCard(person) {
+      // Pure function of the path of father/mother steps from the focus
+      // person down to an ancestor, e.g. ['father', 'mother'] -> "Paternal
+      // grandmother". Kept independent of any particular focus person so
+      // re-centering (#10) can reuse it against a different path.
+      function computeKinshipLabel(path) {
+        if (!path.length) return '';
+        if (path.length === 1) return capitalize(path[0]);
+        var side = path[0] === 'father' ? 'Paternal' : 'Maternal';
+        var sex = path[path.length - 1];
+        var greatPrefix = '';
+        for (var i = 0; i < path.length - 2; i++) greatPrefix += 'great-';
+        return side + ' ' + greatPrefix + 'grand' + sex;
+      }
+
+      function tierLabel(depth) {
+        if (depth === 1) return 'Parents';
+        var greatPrefix = '';
+        for (var i = 0; i < depth - 2; i++) greatPrefix += 'great-';
+        return capitalize(greatPrefix + 'grandparents');
+      }
+
+      function renderPersonCard(person, kinshipLabel) {
         var card = document.createElement('div');
         card.className = 'person-card';
         card.dataset.personId = person.id;
+
+        if (kinshipLabel) {
+          var kinship = document.createElement('div');
+          kinship.className = 'person-kinship';
+          kinship.textContent = kinshipLabel;
+          card.appendChild(kinship);
+        }
 
         var name = document.createElement('div');
         name.className = 'person-name';
@@ -403,10 +480,11 @@
         populateForm(personId ? state.people[personId] : null);
       }
 
-      function renderSlot(role, person, childId) {
+      function renderSlot(role, person, childId, path) {
         var el;
         if (person) {
-          el = renderPersonCard(person);
+          var kinshipLabel = person.labelOverride || computeKinshipLabel(path);
+          el = renderPersonCard(person, kinshipLabel);
           el.classList.add('person-card--clickable');
         } else {
           el = document.createElement('div');
@@ -443,7 +521,7 @@
       // Recursion stops on an empty slot: an unfilled ancestor gets no
       // slots drawn above it, since there is no linked person to attach to.
       function buildTiers(self, generationsBack) {
-        var tiers = [[{ key: 'self', person: self, role: 'self', childKey: null, childId: null }]];
+        var tiers = [[{ key: 'self', person: self, role: 'self', childKey: null, childId: null, path: [] }]];
         var currentTier = tiers[0];
         for (var depth = 0; depth < generationsBack; depth++) {
           var nextTier = [];
@@ -457,6 +535,7 @@
                 role: role,
                 childKey: entry.key,
                 childId: entry.person.id,
+                path: entry.path.concat(role),
               });
             });
           });
@@ -486,6 +565,25 @@
 
         var elementsByKey = {};
         for (var i = tiers.length - 1; i >= 0; i--) {
+          var tierGroup = document.createElement('div');
+          tierGroup.className = 'tree-tier-group';
+
+          if (i > 0) {
+            var filledCount = tiers[i].filter(function (entry) { return !!entry.person; }).length;
+            var totalCount = tiers[i].length;
+            var labelEl = document.createElement('div');
+            labelEl.className = 'tree-tier-label';
+            var labelText = document.createElement('span');
+            labelText.className = 'tree-tier-label-text';
+            labelText.textContent = tierLabel(i);
+            var labelCount = document.createElement('span');
+            labelCount.className = 'tree-tier-count';
+            labelCount.textContent = filledCount + ' of ' + totalCount + ' filled';
+            labelEl.appendChild(labelText);
+            labelEl.appendChild(labelCount);
+            tierGroup.appendChild(labelEl);
+          }
+
           var tierEl = document.createElement('div');
           tierEl.className = 'tree-tier';
           tiers[i].forEach(function (entry) {
@@ -497,13 +595,14 @@
                 selectEditing('self', entry.person.id, null);
               });
             } else {
-              el = renderSlot(entry.role, entry.person, entry.childId);
+              el = renderSlot(entry.role, entry.person, entry.childId, entry.path);
             }
             el.dataset.entryKey = entry.key;
             elementsByKey[entry.key] = el;
             tierEl.appendChild(el);
           });
-          treeRoot.appendChild(tierEl);
+          tierGroup.appendChild(tierEl);
+          treeRoot.appendChild(tierGroup);
         }
 
         var rootRect = treeRoot.getBoundingClientRect();
@@ -523,6 +622,7 @@
         sexInput.value = person ? person.sex || '' : '';
         birthDateInput.value = person ? person.birthDate || '' : '';
         birthPlaceInput.value = person ? person.birthPlace || '' : '';
+        labelOverrideInput.value = person ? person.labelOverride || '' : '';
         givenNameError.hidden = true;
         givenNameInput.removeAttribute('aria-invalid');
       }
@@ -553,6 +653,7 @@
           sex: sexInput.value,
           birthDate: birthDateInput.value,
           birthPlace: birthPlaceInput.value.trim(),
+          labelOverride: labelOverrideInput.value.trim(),
           fatherId: existing.fatherId || null,
           motherId: existing.motherId || null,
         };

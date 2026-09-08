@@ -143,6 +143,49 @@
     border-color: var(--color-danger);
   }
 
+  .field textarea {
+    font: inherit;
+    color: var(--color-text);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    resize: vertical;
+    min-height: 4rem;
+  }
+
+  .field-checkbox {
+    flex-direction: row;
+    align-items: center;
+  }
+
+  .field-checkbox label {
+    color: var(--color-text);
+    font-size: var(--font-size-base);
+  }
+
+  .photo-field {
+    flex-direction: row;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .photo-preview {
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 50%;
+    object-fit: cover;
+    border: 1px solid var(--color-border);
+    flex-shrink: 0;
+  }
+
+  .photo-field-controls {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    flex: 1;
+  }
+
   .field-error {
     margin: 0;
     font-size: var(--font-size-sm);
@@ -232,6 +275,56 @@
   .person-card .person-detail {
     font-size: var(--font-size-sm);
     color: var(--color-text-muted);
+  }
+
+  .person-card-header {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-1);
+  }
+
+  .person-avatar {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    object-fit: cover;
+  }
+
+  .person-avatar-initials {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 50%;
+    flex-shrink: 0;
+    background: var(--color-accent);
+    color: var(--color-accent-contrast);
+    font-weight: 600;
+    font-size: var(--font-size-sm);
+  }
+
+  .person-card-header .person-name {
+    margin-bottom: 0;
+  }
+
+  .person-card--deceased {
+    background: var(--color-bg);
+    border-style: dashed;
+  }
+
+  .person-card--deceased .person-avatar,
+  .person-card--deceased .person-avatar-initials {
+    filter: grayscale(1);
+    opacity: 0.85;
+  }
+
+  .person-card--deceased .person-name::after {
+    content: ' \2020';
+    color: var(--color-text-muted);
+    font-weight: 400;
   }
 
   .person-card .person-kinship {
@@ -363,6 +456,44 @@
           <input type="text" id="self-birth-place" name="birthPlace">
         </div>
         <div class="field">
+          <label for="self-name-at-birth">Name at birth</label>
+          <input type="text" id="self-name-at-birth" name="nameAtBirth">
+        </div>
+        <div class="field">
+          <label for="self-occupation">Occupation</label>
+          <input type="text" id="self-occupation" name="occupation">
+        </div>
+        <div class="field photo-field">
+          <img id="self-photo-preview" class="photo-preview" alt="Photo preview" hidden>
+          <div class="photo-field-controls">
+            <label for="self-photo">Photo</label>
+            <input type="file" id="self-photo" name="photo" accept="image/*">
+            <button type="button" id="self-photo-remove" class="btn-secondary" hidden>Remove photo</button>
+          </div>
+        </div>
+        <div class="field field-checkbox">
+          <input type="checkbox" id="self-still-living" name="stillLiving" checked>
+          <label for="self-still-living">Still living</label>
+        </div>
+        <div id="self-death-fields">
+          <div class="field">
+            <label for="self-death-date">Death date</label>
+            <input type="date" id="self-death-date" name="deathDate">
+          </div>
+          <div class="field">
+            <label for="self-death-place">Death place</label>
+            <input type="text" id="self-death-place" name="deathPlace">
+          </div>
+        </div>
+        <div class="field">
+          <label for="self-notes">Notes</label>
+          <textarea id="self-notes" name="notes"></textarea>
+        </div>
+        <div class="field">
+          <label for="self-sources">Sources</label>
+          <textarea id="self-sources" name="sources"></textarea>
+        </div>
+        <div class="field">
           <label for="self-label-override">Custom label (optional)</label>
           <input type="text" id="self-label-override" name="labelOverride" placeholder="Overrides the computed relationship label">
         </div>
@@ -419,6 +550,17 @@
       var birthDateInput = document.getElementById('self-birth-date');
       var birthPlaceInput = document.getElementById('self-birth-place');
       var labelOverrideInput = document.getElementById('self-label-override');
+      var nameAtBirthInput = document.getElementById('self-name-at-birth');
+      var occupationInput = document.getElementById('self-occupation');
+      var notesInput = document.getElementById('self-notes');
+      var sourcesInput = document.getElementById('self-sources');
+      var stillLivingInput = document.getElementById('self-still-living');
+      var deathFields = document.getElementById('self-death-fields');
+      var deathDateInput = document.getElementById('self-death-date');
+      var deathPlaceInput = document.getElementById('self-death-place');
+      var photoInput = document.getElementById('self-photo');
+      var photoPreview = document.getElementById('self-photo-preview');
+      var photoRemoveBtn = document.getElementById('self-photo-remove');
       var givenNameError = document.getElementById('self-given-name-error');
       var placeholder = document.getElementById('canvas-placeholder');
       var treeRoot = document.getElementById('tree-root');
@@ -572,6 +714,12 @@
       // role is a parent of (only meaningful for father/mother roles).
       var editing = { role: 'self', personId: state.selfId, childId: null };
 
+      // Holds a photo change staged in the form but not yet saved: either a
+      // freshly downscaled data URL, or an explicit removal. Cleared
+      // whenever the form is repopulated for a different record.
+      var pendingPhoto = { dataUrl: null, removed: false };
+      var MAX_PHOTO_DIMENSION = 240;
+
       function formatDate(isoDate) {
         var parts = isoDate.split('-').map(Number);
         var year = parts[0], month = parts[1], day = parts[2];
@@ -585,6 +733,25 @@
         if (person.birthDate) parts.push(formatDate(person.birthDate));
         if (person.birthPlace) parts.push(person.birthPlace);
         return parts.join(' · ');
+      }
+
+      function isDeceased(person) {
+        return person.stillLiving === false && !!(person.deathDate || person.deathPlace);
+      }
+
+      function formatDeathDetails(person) {
+        var parts = [];
+        if (person.deathDate) parts.push(formatDate(person.deathDate));
+        if (person.deathPlace) parts.push(person.deathPlace);
+        return parts.join(' · ');
+      }
+
+      function getInitials(person) {
+        var letters = [person.givenName, person.familyName]
+          .filter(Boolean)
+          .map(function (part) { return part.trim().charAt(0).toUpperCase(); })
+          .filter(Boolean);
+        return letters.join('') || '?';
       }
 
       function capitalize(word) {
@@ -616,6 +783,8 @@
         var card = document.createElement('div');
         card.className = 'person-card';
         card.dataset.personId = person.id;
+        var deceased = isDeceased(person);
+        if (deceased) card.classList.add('person-card--deceased');
 
         if (kinshipLabel) {
           var kinship = document.createElement('div');
@@ -624,10 +793,27 @@
           card.appendChild(kinship);
         }
 
+        var header = document.createElement('div');
+        header.className = 'person-card-header';
+
+        if (person.photo) {
+          var avatar = document.createElement('img');
+          avatar.className = 'person-avatar';
+          avatar.src = person.photo;
+          avatar.alt = '';
+          header.appendChild(avatar);
+        } else {
+          var initials = document.createElement('div');
+          initials.className = 'person-avatar-initials';
+          initials.textContent = getInitials(person);
+          header.appendChild(initials);
+        }
+
         var name = document.createElement('div');
         name.className = 'person-name';
         name.textContent = [person.givenName, person.familyName].filter(Boolean).join(' ') || 'Unnamed';
-        card.appendChild(name);
+        header.appendChild(name);
+        card.appendChild(header);
 
         var details = formatBirthDetails(person);
         if (details) {
@@ -635,6 +821,16 @@
           detail.className = 'person-detail';
           detail.textContent = details;
           card.appendChild(detail);
+        }
+
+        if (deceased) {
+          var deathDetails = formatDeathDetails(person);
+          if (deathDetails) {
+            var deathDetail = document.createElement('div');
+            deathDetail.className = 'person-detail';
+            deathDetail.textContent = deathDetails;
+            card.appendChild(deathDetail);
+          }
         }
 
         return card;
@@ -787,13 +983,80 @@
         });
       }
 
+      function updateStillLivingUI() {
+        var stillLiving = stillLivingInput.checked;
+        deathFields.hidden = stillLiving;
+        deathDateInput.disabled = stillLiving;
+        deathPlaceInput.disabled = stillLiving;
+      }
+
+      stillLivingInput.addEventListener('change', updateStillLivingUI);
+
+      function updatePhotoPreview(dataUrl) {
+        if (dataUrl) {
+          photoPreview.src = dataUrl;
+          photoPreview.hidden = false;
+          photoRemoveBtn.hidden = false;
+        } else {
+          photoPreview.src = '';
+          photoPreview.hidden = true;
+          photoRemoveBtn.hidden = true;
+        }
+      }
+
+      // Draws the loaded image onto an off-screen canvas at a bounded size
+      // so the resulting data URL stays small enough for localStorage.
+      function downscaleImage(img) {
+        var scale = Math.min(1, MAX_PHOTO_DIMENSION / img.width, MAX_PHOTO_DIMENSION / img.height);
+        var width = Math.max(1, Math.round(img.width * scale));
+        var height = Math.max(1, Math.round(img.height * scale));
+        var offscreenCanvas = document.createElement('canvas');
+        offscreenCanvas.width = width;
+        offscreenCanvas.height = height;
+        offscreenCanvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        return offscreenCanvas.toDataURL('image/jpeg', 0.85);
+      }
+
+      photoInput.addEventListener('change', function () {
+        var file = photoInput.files && photoInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          var img = new Image();
+          img.onload = function () {
+            var dataUrl = downscaleImage(img);
+            pendingPhoto = { dataUrl: dataUrl, removed: false };
+            updatePhotoPreview(dataUrl);
+          };
+          img.src = reader.result;
+        };
+        reader.readAsDataURL(file);
+      });
+
+      photoRemoveBtn.addEventListener('click', function () {
+        pendingPhoto = { dataUrl: null, removed: true };
+        photoInput.value = '';
+        updatePhotoPreview(null);
+      });
+
       function populateForm(person) {
         givenNameInput.value = person ? person.givenName || '' : '';
         familyNameInput.value = person ? person.familyName || '' : '';
         sexInput.value = person ? person.sex || '' : '';
         birthDateInput.value = person ? person.birthDate || '' : '';
         birthPlaceInput.value = person ? person.birthPlace || '' : '';
+        nameAtBirthInput.value = person ? person.nameAtBirth || '' : '';
+        occupationInput.value = person ? person.occupation || '' : '';
+        notesInput.value = person ? person.notes || '' : '';
+        sourcesInput.value = person ? person.sources || '' : '';
+        deathDateInput.value = person ? person.deathDate || '' : '';
+        deathPlaceInput.value = person ? person.deathPlace || '' : '';
+        stillLivingInput.checked = person ? person.stillLiving !== false : true;
+        updateStillLivingUI();
         labelOverrideInput.value = person ? person.labelOverride || '' : '';
+        photoInput.value = '';
+        pendingPhoto = { dataUrl: null, removed: false };
+        updatePhotoPreview(person ? person.photo || null : null);
         givenNameError.hidden = true;
         givenNameInput.removeAttribute('aria-invalid');
       }
@@ -817,6 +1080,7 @@
 
         var id = editing.personId || generateId();
         var existing = state.people[id] || {};
+        var photo = pendingPhoto.removed ? null : (pendingPhoto.dataUrl || existing.photo || null);
         var person = {
           id: id,
           givenName: givenName,
@@ -824,6 +1088,14 @@
           sex: sexInput.value,
           birthDate: birthDateInput.value,
           birthPlace: birthPlaceInput.value.trim(),
+          nameAtBirth: nameAtBirthInput.value.trim(),
+          occupation: occupationInput.value.trim(),
+          notes: notesInput.value.trim(),
+          sources: sourcesInput.value.trim(),
+          stillLiving: stillLivingInput.checked,
+          deathDate: stillLivingInput.checked ? '' : deathDateInput.value,
+          deathPlace: stillLivingInput.checked ? '' : deathPlaceInput.value.trim(),
+          photo: photo,
           labelOverride: labelOverrideInput.value.trim(),
           fatherId: existing.fatherId || null,
           motherId: existing.motherId || null,

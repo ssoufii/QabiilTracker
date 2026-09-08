@@ -365,10 +365,76 @@
     color: var(--color-accent);
   }
 
-  .tree-controls {
+  .tree-controls,
+  .sidebar-section {
     margin-bottom: var(--space-4);
     padding-bottom: var(--space-4);
     border-bottom: 1px solid var(--color-border);
+  }
+
+  .person-search-results {
+    list-style: none;
+    margin: var(--space-2) 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .person-search-result {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    width: 100%;
+    font: inherit;
+    text-align: left;
+    color: var(--color-text);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius);
+    padding: var(--space-2);
+    cursor: pointer;
+  }
+
+  .person-search-result:hover {
+    border-color: var(--color-accent);
+  }
+
+  .person-search-result-detail {
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .person-search-empty {
+    margin: var(--space-2) 0 0;
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
+  .ledger-list {
+    list-style: none;
+    margin: var(--space-2) 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .ledger-item {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    font-size: var(--font-size-sm);
+  }
+
+  .ledger-label {
+    color: var(--color-text-muted);
+  }
+
+  .ledger-value {
+    font-weight: 600;
+    color: var(--color-text);
   }
 
   .field input[type="range"] {
@@ -427,6 +493,32 @@
           <input type="range" id="generations-slider" min="1" max="10" step="1">
         </div>
         <button type="button" id="fit-to-screen-btn" class="btn-secondary">Fit to screen</button>
+      </div>
+      <div class="sidebar-section find-people">
+        <h2>Find people</h2>
+        <div class="field">
+          <label for="person-search">Search by name</label>
+          <input type="search" id="person-search" placeholder="e.g. Amina Yusuf">
+        </div>
+        <ul id="person-search-results" class="person-search-results"></ul>
+        <p id="person-search-empty" class="person-search-empty" hidden>No matches.</p>
+      </div>
+      <div class="sidebar-section tree-ledger">
+        <h2>Ledger</h2>
+        <ul class="ledger-list">
+          <li class="ledger-item">
+            <span class="ledger-label">People recorded</span>
+            <span class="ledger-value" id="ledger-total"></span>
+          </li>
+          <li class="ledger-item">
+            <span class="ledger-label">Slots filled</span>
+            <span class="ledger-value" id="ledger-slots"></span>
+          </li>
+          <li class="ledger-item">
+            <span class="ledger-label">Deepest generation</span>
+            <span class="ledger-value" id="ledger-deepest"></span>
+          </li>
+        </ul>
       </div>
       <h2 id="form-heading">Myself</h2>
       <form id="self-form" class="person-form" novalidate>
@@ -568,6 +660,12 @@
       var generationsValue = document.getElementById('generations-value');
       var canvas = document.getElementById('canvas');
       var fitToScreenBtn = document.getElementById('fit-to-screen-btn');
+      var personSearchInput = document.getElementById('person-search');
+      var personSearchResults = document.getElementById('person-search-results');
+      var personSearchEmpty = document.getElementById('person-search-empty');
+      var ledgerTotal = document.getElementById('ledger-total');
+      var ledgerSlots = document.getElementById('ledger-slots');
+      var ledgerDeepest = document.getElementById('ledger-deepest');
 
       // Pan/zoom view of the canvas, applied as a CSS transform on
       // #tree-root and kept independent of the layout logic in buildTiers.
@@ -758,6 +856,95 @@
         return word.charAt(0).toUpperCase() + word.slice(1);
       }
 
+      function getFullName(person) {
+        return [person.givenName, person.familyName].filter(Boolean).join(' ') || 'Unnamed';
+      }
+
+      // Finds how a person is currently linked into the tree, so a search
+      // result can be opened for editing the same way clicking its card
+      // would. Every person in state.people is reachable from self via
+      // father/mother links, so exactly one of these cases applies.
+      function resolveEditContext(personId) {
+        if (personId === state.selfId) return { role: 'self', childId: null };
+        for (var id in state.people) {
+          var candidate = state.people[id];
+          if (candidate.fatherId === personId) return { role: 'father', childId: id };
+          if (candidate.motherId === personId) return { role: 'mother', childId: id };
+        }
+        return { role: 'self', childId: null };
+      }
+
+      function renderSearchResults() {
+        var query = personSearchInput.value.trim().toLowerCase();
+        personSearchResults.innerHTML = '';
+        if (!query) {
+          personSearchEmpty.hidden = true;
+          return;
+        }
+
+        var matches = Object.keys(state.people)
+          .map(function (id) { return state.people[id]; })
+          .filter(function (person) { return getFullName(person).toLowerCase().indexOf(query) !== -1; })
+          .sort(function (a, b) { return getFullName(a).localeCompare(getFullName(b)); });
+
+        matches.forEach(function (person) {
+          var item = document.createElement('li');
+          var button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'person-search-result';
+
+          var name = document.createElement('span');
+          name.textContent = getFullName(person);
+          button.appendChild(name);
+
+          var details = formatBirthDetails(person);
+          if (details) {
+            var detail = document.createElement('span');
+            detail.className = 'person-search-result-detail';
+            detail.textContent = details;
+            button.appendChild(detail);
+          }
+
+          button.addEventListener('click', function () {
+            var context = resolveEditContext(person.id);
+            selectEditing(context.role, person.id, context.childId);
+          });
+
+          item.appendChild(button);
+          personSearchResults.appendChild(item);
+        });
+
+        personSearchEmpty.hidden = matches.length > 0;
+      }
+
+      personSearchInput.addEventListener('input', renderSearchResults);
+
+      // Slot counts read off the same buildTiers() structure used for
+      // rendering (#4): a branch with no recorded ancestor doesn't expand
+      // further, so "total possible" reflects the tree as actually linked,
+      // not a full binary count.
+      function renderLedger() {
+        var totalPeople = Object.keys(state.people).length;
+        var self = state.selfId ? state.people[state.selfId] : null;
+        var filledSlots = 0;
+        var totalSlots = 0;
+        var deepestGeneration = 0;
+
+        if (self) {
+          var tiers = buildTiers(self, state.generationsBack);
+          for (var i = 1; i < tiers.length; i++) {
+            var tierFilled = tiers[i].filter(function (entry) { return !!entry.person; }).length;
+            filledSlots += tierFilled;
+            totalSlots += tiers[i].length;
+            if (tierFilled > 0) deepestGeneration = i;
+          }
+        }
+
+        ledgerTotal.textContent = totalPeople;
+        ledgerSlots.textContent = filledSlots + ' of ' + totalSlots;
+        ledgerDeepest.textContent = deepestGeneration;
+      }
+
       // Pure function of the path of father/mother steps from the focus
       // person down to an ancestor, e.g. ['father', 'mother'] -> "Paternal
       // grandmother". Kept independent of any particular focus person so
@@ -811,7 +998,7 @@
 
         var name = document.createElement('div');
         name.className = 'person-name';
-        name.textContent = [person.givenName, person.familyName].filter(Boolean).join(' ') || 'Unnamed';
+        name.textContent = getFullName(person);
         header.appendChild(name);
         card.appendChild(header);
 
@@ -913,6 +1100,8 @@
       }
 
       function renderCanvas() {
+        renderSearchResults();
+        renderLedger();
         treeRoot.innerHTML = '';
         var self = state.selfId ? state.people[state.selfId] : null;
         if (!self) {

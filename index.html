@@ -224,6 +224,29 @@
     border-color: var(--color-accent);
   }
 
+  .btn-danger {
+    font: inherit;
+    font-weight: 600;
+    color: var(--color-danger);
+    background: var(--color-surface);
+    border: 1px solid var(--color-danger);
+    border-radius: var(--radius);
+    padding: var(--space-2) var(--space-3);
+    cursor: pointer;
+    align-self: flex-start;
+  }
+
+  .btn-danger:hover {
+    background: var(--color-danger);
+    color: var(--color-accent-contrast);
+  }
+
+  .button-row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
   .tree-root {
     display: flex;
     flex-direction: column;
@@ -411,6 +434,12 @@
     color: var(--color-text-muted);
   }
 
+  .person-search-hint {
+    margin: 0 0 var(--space-2);
+    font-size: var(--font-size-sm);
+    color: var(--color-text-muted);
+  }
+
   .ledger-list {
     list-style: none;
     margin: var(--space-2) 0 0;
@@ -494,12 +523,21 @@
         </div>
         <button type="button" id="fit-to-screen-btn" class="btn-secondary">Fit to screen</button>
       </div>
+      <div class="sidebar-section tree-data">
+        <h2>Data</h2>
+        <div class="button-row">
+          <button type="button" id="export-btn" class="btn-secondary">Export</button>
+          <button type="button" id="import-btn" class="btn-secondary">Import</button>
+        </div>
+        <input type="file" id="import-file-input" accept="application/json" hidden>
+      </div>
       <div class="sidebar-section find-people">
         <h2>Find people</h2>
         <div class="field">
           <label for="person-search">Search by name</label>
           <input type="search" id="person-search" placeholder="e.g. Amina Yusuf">
         </div>
+        <p id="person-search-hint" class="person-search-hint" hidden></p>
         <ul id="person-search-results" class="person-search-results"></ul>
         <p id="person-search-empty" class="person-search-empty" hidden>No matches.</p>
       </div>
@@ -590,6 +628,7 @@
           <input type="text" id="self-label-override" name="labelOverride" placeholder="Overrides the computed relationship label">
         </div>
         <button type="submit" class="btn-primary">Save</button>
+        <button type="button" id="delete-btn" class="btn-danger" hidden>Delete record</button>
       </form>
     </aside>
     <main id="canvas" class="canvas">
@@ -663,9 +702,14 @@
       var personSearchInput = document.getElementById('person-search');
       var personSearchResults = document.getElementById('person-search-results');
       var personSearchEmpty = document.getElementById('person-search-empty');
+      var personSearchHint = document.getElementById('person-search-hint');
       var ledgerTotal = document.getElementById('ledger-total');
       var ledgerSlots = document.getElementById('ledger-slots');
       var ledgerDeepest = document.getElementById('ledger-deepest');
+      var exportBtn = document.getElementById('export-btn');
+      var importBtn = document.getElementById('import-btn');
+      var importFileInput = document.getElementById('import-file-input');
+      var deleteBtn = document.getElementById('delete-btn');
 
       // Pan/zoom view of the canvas, applied as a CSS transform on
       // #tree-root and kept independent of the layout logic in buildTiers.
@@ -874,6 +918,54 @@
         return { role: 'self', childId: null };
       }
 
+      // True while the form is set to create a brand-new father/mother for
+      // an existing person's empty slot (as opposed to editing self or an
+      // already-linked record) — the point at which a search result should
+      // attach instead of navigate.
+      function isAttachableSlot() {
+        return editing.role !== 'self' && !editing.personId && !!editing.childId;
+      }
+
+      // Walks the parent chain from candidateId looking for childId, so
+      // attaching candidateId as childId's parent can be refused if it
+      // would make childId its own ancestor.
+      function wouldCreateCycle(candidateId, childId) {
+        var visited = {};
+        var queue = [candidateId];
+        while (queue.length) {
+          var current = queue.shift();
+          if (current === childId) return true;
+          if (visited[current]) continue;
+          visited[current] = true;
+          var person = state.people[current];
+          if (!person) continue;
+          if (person.fatherId) queue.push(person.fatherId);
+          if (person.motherId) queue.push(person.motherId);
+        }
+        return false;
+      }
+
+      function attachExistingPerson(candidateId) {
+        if (wouldCreateCycle(candidateId, editing.childId)) {
+          alert('That person can\'t be linked here: it would create a circular relationship.');
+          return;
+        }
+        state.people[editing.childId][editing.role + 'Id'] = candidateId;
+        saveState(state);
+        selectEditing(editing.role, candidateId, editing.childId);
+        renderCanvas();
+      }
+
+      function updateSearchHint() {
+        if (isAttachableSlot()) {
+          personSearchHint.textContent = 'Selecting a result below links them as ' +
+            capitalize(editing.role) + ' instead of creating a new record.';
+          personSearchHint.hidden = false;
+        } else {
+          personSearchHint.hidden = true;
+        }
+      }
+
       function renderSearchResults() {
         var query = personSearchInput.value.trim().toLowerCase();
         personSearchResults.innerHTML = '';
@@ -906,6 +998,10 @@
           }
 
           button.addEventListener('click', function () {
+            if (isAttachableSlot()) {
+              attachExistingPerson(person.id);
+              return;
+            }
             var context = resolveEditContext(person.id);
             selectEditing(context.role, person.id, context.childId);
           });
@@ -1027,6 +1123,7 @@
         editing = { role: role, personId: personId || null, childId: childId || null };
         formHeading.textContent = role === 'self' ? 'Myself' : capitalize(role);
         populateForm(personId ? state.people[personId] : null);
+        updateSearchHint();
       }
 
       function renderSlot(role, person, childId, path) {
@@ -1248,6 +1345,7 @@
         updatePhotoPreview(person ? person.photo || null : null);
         givenNameError.hidden = true;
         givenNameInput.removeAttribute('aria-invalid');
+        deleteBtn.hidden = !person;
       }
 
       function generateId() {
@@ -1302,6 +1400,82 @@
         saveState(state);
         populateForm(person);
         renderCanvas();
+      });
+
+      deleteBtn.addEventListener('click', function () {
+        var id = editing.personId;
+        if (!id) return;
+        var person = state.people[id];
+        var dependents = Object.keys(state.people)
+          .map(function (pid) { return state.people[pid]; })
+          .filter(function (candidate) { return candidate.fatherId === id || candidate.motherId === id; });
+
+        var message = 'Delete ' + getFullName(person) + '? This can\'t be undone.';
+        if (dependents.length) {
+          var names = dependents.map(getFullName).join(', ');
+          message = getFullName(person) + ' is linked as a parent of ' + names +
+            '. Deleting them will remove that link. Continue?';
+        }
+        if (!window.confirm(message)) return;
+
+        dependents.forEach(function (dependent) {
+          if (dependent.fatherId === id) dependent.fatherId = null;
+          if (dependent.motherId === id) dependent.motherId = null;
+        });
+
+        delete state.people[id];
+        if (state.selfId === id) state.selfId = null;
+
+        saveState(state);
+        selectEditing('self', state.selfId, null);
+        renderCanvas();
+      });
+
+      exportBtn.addEventListener('click', function () {
+        var payload = JSON.stringify(state, null, 2);
+        var blob = new Blob([payload], { type: 'application/json' });
+        var url = URL.createObjectURL(blob);
+        var link = document.createElement('a');
+        link.href = url;
+        link.download = 'qabiiltracker-export.json';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+      });
+
+      importBtn.addEventListener('click', function () {
+        importFileInput.click();
+      });
+
+      importFileInput.addEventListener('change', function () {
+        var file = importFileInput.files && importFileInput.files[0];
+        if (!file) return;
+        var reader = new FileReader();
+        reader.onload = function () {
+          try {
+            var parsed = JSON.parse(reader.result);
+            if (!parsed || typeof parsed.people !== 'object' || parsed.people === null) {
+              throw new Error('Invalid file format.');
+            }
+            state = {
+              people: parsed.people,
+              selfId: parsed.selfId || null,
+              generationsBack: clampGenerationsBack(
+                parsed.generationsBack != null ? parsed.generationsBack : DEFAULT_GENERATIONS_BACK
+              ),
+            };
+            saveState(state);
+            generationsSlider.value = state.generationsBack;
+            updateGenerationsDisplay();
+            selectEditing('self', state.selfId, null);
+            renderCanvas();
+          } catch (err) {
+            alert('Could not import file: ' + err.message);
+          }
+          importFileInput.value = '';
+        };
+        reader.readAsText(file);
       });
 
       givenNameInput.addEventListener('input', function () {

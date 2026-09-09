@@ -368,6 +368,13 @@
     box-shadow: 0 2px 6px rgba(0, 0, 0, 0.12);
   }
 
+  .person-make-focus {
+    width: 100%;
+    margin-top: var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    font-size: var(--font-size-sm);
+  }
+
   .person-slot-empty {
     display: flex;
     align-items: center;
@@ -522,6 +529,7 @@
           <input type="range" id="generations-slider" min="1" max="10" step="1">
         </div>
         <button type="button" id="fit-to-screen-btn" class="btn-secondary">Fit to screen</button>
+        <button type="button" id="back-to-me-btn" class="btn-secondary" hidden>Back to me</button>
       </div>
       <div class="sidebar-section tree-data">
         <h2>Data</h2>
@@ -652,17 +660,18 @@
       function loadState() {
         try {
           var raw = localStorage.getItem(STORAGE_KEY);
-          if (!raw) return { people: {}, selfId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
+          if (!raw) return { people: {}, selfId: null, focusId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
           var parsed = JSON.parse(raw);
           return {
             people: parsed.people || {},
             selfId: parsed.selfId || null,
+            focusId: parsed.focusId || null,
             generationsBack: clampGenerationsBack(
               parsed.generationsBack != null ? parsed.generationsBack : DEFAULT_GENERATIONS_BACK
             ),
           };
         } catch (err) {
-          return { people: {}, selfId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
+          return { people: {}, selfId: null, focusId: null, generationsBack: DEFAULT_GENERATIONS_BACK };
         }
       }
 
@@ -699,6 +708,7 @@
       var generationsValue = document.getElementById('generations-value');
       var canvas = document.getElementById('canvas');
       var fitToScreenBtn = document.getElementById('fit-to-screen-btn');
+      var backToMeBtn = document.getElementById('back-to-me-btn');
       var personSearchInput = document.getElementById('person-search');
       var personSearchResults = document.getElementById('person-search-results');
       var personSearchEmpty = document.getElementById('person-search-empty');
@@ -852,9 +862,29 @@
       canvas.addEventListener('pointercancel', releasePointer);
 
       // Tracks which record the sidebar form is currently creating/editing.
-      // role: 'self' | 'father' | 'mother'; childId: id of the person this
-      // role is a parent of (only meaningful for father/mother roles).
+      // role: 'self' | 'father' | 'mother' | 'sibling'; childId: id of the
+      // person this role is a parent of (father/mother), or the person whose
+      // parents a new sibling should be copied from (sibling).
       var editing = { role: 'self', personId: state.selfId, childId: null };
+
+      // The tree can be re-centred (#10) on any ancestor without changing
+      // who "myself" is. focusId falls back to selfId whenever it's unset
+      // or points at a person that no longer exists.
+      function getFocusId() {
+        if (state.focusId && state.people[state.focusId]) return state.focusId;
+        return state.selfId;
+      }
+
+      function getFocus() {
+        var id = getFocusId();
+        return id ? state.people[id] : null;
+      }
+
+      backToMeBtn.addEventListener('click', function () {
+        state.focusId = null;
+        saveState(state);
+        renderCanvas();
+      });
 
       // Holds a photo change staged in the form but not yet saved: either a
       // freshly downscaled data URL, or an explicit removal. Cleared
@@ -907,7 +937,8 @@
       // Finds how a person is currently linked into the tree, so a search
       // result can be opened for editing the same way clicking its card
       // would. Every person in state.people is reachable from self via
-      // father/mother links, so exactly one of these cases applies.
+      // father/mother links, or, failing that, as a sibling (someone who
+      // shares a parent but is nobody's recorded parent).
       function resolveEditContext(personId) {
         if (personId === state.selfId) return { role: 'self', childId: null };
         for (var id in state.people) {
@@ -915,15 +946,21 @@
           if (candidate.fatherId === personId) return { role: 'father', childId: id };
           if (candidate.motherId === personId) return { role: 'mother', childId: id };
         }
+        var person = state.people[personId];
+        if (person && (person.fatherId || person.motherId)) {
+          return { role: 'sibling', childId: personId };
+        }
         return { role: 'self', childId: null };
       }
 
       // True while the form is set to create a brand-new father/mother for
       // an existing person's empty slot (as opposed to editing self or an
       // already-linked record) — the point at which a search result should
-      // attach instead of navigate.
+      // attach instead of navigate. Excludes 'sibling' since attaching an
+      // existing person there would need its own linking logic (#10 only
+      // requires creating a new sibling record).
       function isAttachableSlot() {
-        return editing.role !== 'self' && !editing.personId && !!editing.childId;
+        return (editing.role === 'father' || editing.role === 'mother') && !editing.personId && !!editing.childId;
       }
 
       // Walks the parent chain from candidateId looking for childId, so
@@ -1021,13 +1058,13 @@
       // not a full binary count.
       function renderLedger() {
         var totalPeople = Object.keys(state.people).length;
-        var self = state.selfId ? state.people[state.selfId] : null;
+        var focus = getFocus();
         var filledSlots = 0;
         var totalSlots = 0;
         var deepestGeneration = 0;
 
-        if (self) {
-          var tiers = buildTiers(self, state.generationsBack);
+        if (focus) {
+          var tiers = buildTiers(focus, state.generationsBack);
           for (var i = 1; i < tiers.length; i++) {
             var tierFilled = tiers[i].filter(function (entry) { return !!entry.person; }).length;
             filledSlots += tierFilled;
@@ -1053,6 +1090,28 @@
         var greatPrefix = '';
         for (var i = 0; i < path.length - 2; i++) greatPrefix += 'great-';
         return side + ' ' + greatPrefix + 'grand' + sex;
+      }
+
+      // A sibling is anyone else who shares at least one of person's
+      // recorded parents (out of scope: distinguishing half- from full
+      // siblings beyond that shared link).
+      function getSiblings(person) {
+        if (!person) return [];
+        return Object.keys(state.people)
+          .map(function (id) { return state.people[id]; })
+          .filter(function (candidate) {
+            return candidate.id !== person.id && (
+              (person.fatherId && candidate.fatherId === person.fatherId) ||
+              (person.motherId && candidate.motherId === person.motherId)
+            );
+          })
+          .sort(function (a, b) { return getFullName(a).localeCompare(getFullName(b)); });
+      }
+
+      function computeSiblingLabel(person) {
+        if (person.sex === 'male') return 'Brother';
+        if (person.sex === 'female') return 'Sister';
+        return 'Sibling';
       }
 
       function tierLabel(depth) {
@@ -1126,12 +1185,25 @@
         updateSearchHint();
       }
 
+      // Only ever called for ancestor tiers (depth >= 1 in buildTiers), so
+      // every filled card it produces is a valid re-centering target (#10).
       function renderSlot(role, person, childId, path) {
         var el;
         if (person) {
           var kinshipLabel = person.labelOverride || computeKinshipLabel(path);
           el = renderPersonCard(person, kinshipLabel);
           el.classList.add('person-card--clickable');
+          var makeFocusBtn = document.createElement('button');
+          makeFocusBtn.type = 'button';
+          makeFocusBtn.className = 'btn-secondary person-make-focus';
+          makeFocusBtn.textContent = 'Make focus';
+          makeFocusBtn.addEventListener('click', function (event) {
+            event.stopPropagation();
+            state.focusId = person.id;
+            saveState(state);
+            renderCanvas();
+          });
+          el.appendChild(makeFocusBtn);
         } else {
           el = document.createElement('div');
           el.className = 'person-slot-empty';
@@ -1166,17 +1238,26 @@
         svg.appendChild(path);
       }
 
-      // Builds a list of tiers, tiers[0] being self and each subsequent tier
-      // the father/mother slots of the previous tier's filled entries.
-      // Recursion stops on an empty slot: an unfilled ancestor gets no
-      // slots drawn above it, since there is no linked person to attach to.
-      function buildTiers(self, generationsBack) {
-        var tiers = [[{ key: 'self', person: self, role: 'self', childKey: null, childId: null, path: [] }]];
+      // Builds a list of tiers, tiers[0] being the focus person plus any
+      // recorded siblings (#10), and each subsequent tier the father/mother
+      // slots of the previous tier's filled entries. Sibling entries don't
+      // expand upward themselves — they share the focus person's parents,
+      // so expanding them too would duplicate the ancestor tiers. Recursion
+      // stops on an empty slot: an unfilled ancestor gets no slots drawn
+      // above it, since there is no linked person to attach to. Pure in
+      // its focus argument, so re-centering (#10) just calls it again with
+      // a different focus person.
+      function buildTiers(focus, generationsBack) {
+        var focusEntry = { key: 'self', person: focus, role: 'self', childKey: null, childId: null, path: [] };
+        var siblingEntries = getSiblings(focus).map(function (sibling) {
+          return { key: 'sibling.' + sibling.id, person: sibling, role: 'sibling', childKey: null, childId: null, path: null };
+        });
+        var tiers = [[focusEntry].concat(siblingEntries)];
         var currentTier = tiers[0];
         for (var depth = 0; depth < generationsBack; depth++) {
           var nextTier = [];
           currentTier.forEach(function (entry) {
-            if (!entry.person) return;
+            if (!entry.person || entry.role === 'sibling') return;
             PARENT_ROLES.forEach(function (role) {
               var parentId = entry.person[role + 'Id'];
               nextTier.push({
@@ -1200,8 +1281,9 @@
         renderSearchResults();
         renderLedger();
         treeRoot.innerHTML = '';
-        var self = state.selfId ? state.people[state.selfId] : null;
-        if (!self) {
+        var focus = getFocus();
+        backToMeBtn.hidden = !(state.selfId && getFocusId() !== state.selfId);
+        if (!focus) {
           placeholder.hidden = false;
           treeRoot.hidden = true;
           return;
@@ -1210,7 +1292,7 @@
         treeRoot.hidden = false;
         applyTransform();
 
-        var tiers = buildTiers(self, state.generationsBack);
+        var tiers = buildTiers(focus, state.generationsBack);
 
         var svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
         svg.setAttribute('class', 'tree-connectors');
@@ -1245,7 +1327,17 @@
               el = renderPersonCard(entry.person);
               el.classList.add('person-card--clickable');
               el.addEventListener('click', function () {
-                selectEditing('self', entry.person.id, null);
+                // entry.person may be a re-centered ancestor rather than
+                // the true self, so look up how it's actually linked.
+                var context = resolveEditContext(entry.person.id);
+                selectEditing(context.role, entry.person.id, context.childId);
+              });
+            } else if (entry.role === 'sibling') {
+              var siblingLabel = entry.person.labelOverride || computeSiblingLabel(entry.person);
+              el = renderPersonCard(entry.person, siblingLabel);
+              el.classList.add('person-card--clickable');
+              el.addEventListener('click', function () {
+                selectEditing('sibling', entry.person.id, focus.id);
               });
             } else {
               el = renderSlot(entry.role, entry.person, entry.childId, entry.path);
@@ -1254,6 +1346,17 @@
             elementsByKey[entry.key] = el;
             tierEl.appendChild(el);
           });
+
+          if (i === 0 && (focus.fatherId || focus.motherId)) {
+            var addSiblingSlot = document.createElement('div');
+            addSiblingSlot.className = 'person-slot-empty';
+            addSiblingSlot.textContent = '+ Add ' + capitalize('sibling');
+            addSiblingSlot.addEventListener('click', function () {
+              selectEditing('sibling', null, focus.id);
+            });
+            tierEl.appendChild(addSiblingSlot);
+          }
+
           tierGroup.appendChild(tierEl);
           treeRoot.appendChild(tierGroup);
         }
@@ -1267,6 +1370,25 @@
             drawConnector(svg, from, to);
           });
         });
+
+        // Siblings share the focus person's parents but aren't tracked via
+        // childKey (which is a one-to-one link), so their connectors to the
+        // parent tier are drawn separately here.
+        if (tiers.length > 1) {
+          var parentTier = tiers[1];
+          tiers[0].forEach(function (entry) {
+            if (entry.role !== 'sibling') return;
+            parentTier.forEach(function (parentEntry) {
+              if (!parentEntry.person) return;
+              var sharesParent = (parentEntry.role === 'father' && entry.person.fatherId === parentEntry.person.id) ||
+                (parentEntry.role === 'mother' && entry.person.motherId === parentEntry.person.id);
+              if (!sharesParent) return;
+              var from = elementCenter(elementsByKey[parentEntry.key], 'bottom', rootRect, view.scale);
+              var to = elementCenter(elementsByKey[entry.key], 'top', rootRect, view.scale);
+              drawConnector(svg, from, to);
+            });
+          });
+        }
       }
 
       function updateStillLivingUI() {
@@ -1367,6 +1489,11 @@
 
         var id = editing.personId || generateId();
         var existing = state.people[id] || {};
+        // A brand-new sibling is linked by copying editing.childId's
+        // parents, rather than the person having its own recorded slot.
+        var siblingSource = !editing.personId && editing.role === 'sibling' && editing.childId
+          ? state.people[editing.childId]
+          : null;
         var photo = pendingPhoto.removed ? null : (pendingPhoto.dataUrl || existing.photo || null);
         var person = {
           id: id,
@@ -1384,14 +1511,17 @@
           deathPlace: stillLivingInput.checked ? '' : deathPlaceInput.value.trim(),
           photo: photo,
           labelOverride: labelOverrideInput.value.trim(),
-          fatherId: existing.fatherId || null,
-          motherId: existing.motherId || null,
+          fatherId: existing.fatherId || (siblingSource && siblingSource.fatherId) || null,
+          motherId: existing.motherId || (siblingSource && siblingSource.motherId) || null,
         };
 
         state.people[id] = person;
 
         if (editing.role === 'self') {
           state.selfId = id;
+        } else if (editing.role === 'sibling') {
+          // Parents are copied onto the person record itself above; there's
+          // no separate link to write back.
         } else if (editing.childId) {
           state.people[editing.childId][editing.role + 'Id'] = id;
         }
@@ -1425,6 +1555,7 @@
 
         delete state.people[id];
         if (state.selfId === id) state.selfId = null;
+        if (state.focusId === id) state.focusId = null;
 
         saveState(state);
         selectEditing('self', state.selfId, null);
@@ -1461,6 +1592,7 @@
             state = {
               people: parsed.people,
               selfId: parsed.selfId || null,
+              focusId: parsed.focusId || null,
               generationsBack: clampGenerationsBack(
                 parsed.generationsBack != null ? parsed.generationsBack : DEFAULT_GENERATIONS_BACK
               ),

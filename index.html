@@ -514,6 +514,42 @@
   .tree-tier-count {
     white-space: nowrap;
   }
+
+  @media (max-width: 40rem) {
+    .app-body {
+      flex-direction: column;
+      overflow-y: auto;
+    }
+
+    .sidebar {
+      width: 100%;
+      max-height: 45vh;
+      border-right: none;
+      border-bottom: 1px solid var(--color-border);
+    }
+
+    .canvas {
+      min-height: 45vh;
+    }
+  }
+
+  @media print {
+    .app-header,
+    .sidebar,
+    .person-make-focus,
+    .person-slot-empty {
+      display: none !important;
+    }
+
+    .app-body {
+      display: block;
+    }
+
+    .canvas {
+      width: 100%;
+      height: 100vh;
+    }
+  }
 </style>
 </head>
 <body>
@@ -639,7 +675,7 @@
         <button type="button" id="delete-btn" class="btn-danger" hidden>Delete record</button>
       </form>
     </aside>
-    <main id="canvas" class="canvas">
+    <main id="canvas" class="canvas" tabindex="0" aria-label="Pedigree tree canvas. Use arrow keys to pan and the plus or minus keys to zoom.">
       <p class="placeholder" id="canvas-placeholder">Your pedigree tree will render here.</p>
       <div id="tree-root" class="tree-root" hidden></div>
     </main>
@@ -770,8 +806,78 @@
         zoomAt(cx, cy, rect, newScale);
       }, { passive: false });
 
+      var KEYBOARD_PAN_STEP = 40;
+      var KEYBOARD_ZOOM_FACTOR = 1.15;
+
+      // Lets a keyboard-only user pan and zoom the canvas without a mouse.
+      // Bound on the canvas itself so it fires whether the canvas or one of
+      // the cards/slots inside it (also focusable) currently has focus.
+      canvas.addEventListener('keydown', function (event) {
+        if (treeRoot.hidden) return;
+        var rect;
+        switch (event.key) {
+          case 'ArrowUp':
+            view.panY += KEYBOARD_PAN_STEP;
+            applyTransform();
+            break;
+          case 'ArrowDown':
+            view.panY -= KEYBOARD_PAN_STEP;
+            applyTransform();
+            break;
+          case 'ArrowLeft':
+            view.panX += KEYBOARD_PAN_STEP;
+            applyTransform();
+            break;
+          case 'ArrowRight':
+            view.panX -= KEYBOARD_PAN_STEP;
+            applyTransform();
+            break;
+          case '+':
+          case '=':
+            rect = canvas.getBoundingClientRect();
+            zoomAt(rect.width / 2, rect.height / 2, rect, view.scale * KEYBOARD_ZOOM_FACTOR);
+            break;
+          case '-':
+          case '_':
+            rect = canvas.getBoundingClientRect();
+            zoomAt(rect.width / 2, rect.height / 2, rect, view.scale / KEYBOARD_ZOOM_FACTOR);
+            break;
+          default:
+            return;
+        }
+        event.preventDefault();
+      });
+
+      // Printing (#11) should show the whole tree fitted to the page rather
+      // than whatever pan/zoom the user last left the canvas at; restore
+      // their view afterwards.
+      var preprintView = null;
+      window.addEventListener('beforeprint', function () {
+        preprintView = { scale: view.scale, panX: view.panX, panY: view.panY };
+        fitToScreen();
+      });
+      window.addEventListener('afterprint', function () {
+        if (!preprintView) return;
+        view = preprintView;
+        preprintView = null;
+        applyTransform();
+      });
+
       function isInteractiveTarget(target) {
         return !!(target.closest && target.closest('.person-card, .person-slot-empty, button, input, select, textarea, a, label'));
+      }
+
+      // Makes a non-native clickable element (a card or empty slot div)
+      // reachable via Tab and activatable with Enter/Space, same as a
+      // click, without duplicating whatever click handler it already has.
+      function makeKeyboardActivatable(el) {
+        el.tabIndex = 0;
+        el.setAttribute('role', 'button');
+        el.addEventListener('keydown', function (event) {
+          if (event.key !== 'Enter' && event.key !== ' ') return;
+          event.preventDefault();
+          el.click();
+        });
       }
 
       function distanceBetween(a, b) {
@@ -1212,6 +1318,7 @@
         el.addEventListener('click', function () {
           selectEditing(role, person ? person.id : null, childId);
         });
+        makeKeyboardActivatable(el);
         return el;
       }
 
@@ -1332,6 +1439,7 @@
                 var context = resolveEditContext(entry.person.id);
                 selectEditing(context.role, entry.person.id, context.childId);
               });
+              makeKeyboardActivatable(el);
             } else if (entry.role === 'sibling') {
               var siblingLabel = entry.person.labelOverride || computeSiblingLabel(entry.person);
               el = renderPersonCard(entry.person, siblingLabel);
@@ -1339,6 +1447,7 @@
               el.addEventListener('click', function () {
                 selectEditing('sibling', entry.person.id, focus.id);
               });
+              makeKeyboardActivatable(el);
             } else {
               el = renderSlot(entry.role, entry.person, entry.childId, entry.path);
             }
@@ -1354,6 +1463,7 @@
             addSiblingSlot.addEventListener('click', function () {
               selectEditing('sibling', null, focus.id);
             });
+            makeKeyboardActivatable(addSiblingSlot);
             tierEl.appendChild(addSiblingSlot);
           }
 
